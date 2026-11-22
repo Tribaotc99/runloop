@@ -1,12 +1,10 @@
-﻿name: runloop
+name: runloop
 on:
-  schedule:
-    - cron: '5 */6 * * *'
   workflow_dispatch:
     inputs:
       budget:
         description: 'so phut chay'
-        default: '335'
+        default: '330'
       direct:
         description: '1 = khong proxy'
         default: '0'
@@ -16,9 +14,15 @@ on:
       maxacc:
         description: 'so acc toi da (0 = tat ca)'
         default: '0'
+      offset:
+        description: 'bat dau tu acc thu may (chia dan)'
+        default: '0'
+permissions:
+  contents: read
+  actions: write
 concurrency:
   group: runloop
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -36,10 +40,24 @@ jobs:
           TP_KEYS: ${{ secrets.TP_KEYS }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT }}
-          BUDGET_MIN: ${{ inputs.budget || '335' }}
+          BUDGET_MIN: ${{ inputs.budget || '330' }}
           DIRECT: ${{ inputs.direct || '0' }}
           MAXACC: ${{ inputs.maxacc || '0' }}
+          OFFSET: ${{ inputs.offset || '0' }}
           GAP_MS: '260'
           PROBE: ${{ inputs.probe || '0' }}
         run: node runner.mjs
-
+      - name: chain (tu chay luot ke -> 24/7)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          api="repos/${{ github.repository }}/actions/runs"
+          other=$(gh api "$api?status=in_progress&per_page=100" --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length")
+          queued=$(gh api "$api?status=queued&per_page=100" --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length')
+          echo "luot khac dang chay=$other dang cho=$queued"
+          if [ "$other" -gt 0 ] && [ "$queued" -gt 0 ]; then echo "da co luot khac -> khong chain"; exit 0; fi
+          gh workflow run run.yml --ref main -f budget=330 -f direct=0 -f probe=0 -f maxacc=0 -f offset=0
+          sleep 8
+          gh api "$api?per_page=1" --jq '.workflow_runs[0] | "chain -> #\(.run_number) \(.status)"'
