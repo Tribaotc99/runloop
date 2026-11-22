@@ -7,6 +7,12 @@ on:
       budget:
         description: 'so phut chay'
         default: '335'
+      direct:
+        description: '1 = khong proxy'
+        default: '0'
+      maxacc:
+        description: 'so acc toi da (0 = tat ca)'
+        default: '0'
 concurrency:
   group: runloop
   cancel-in-progress: true
@@ -28,6 +34,7 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT }}
           BUDGET_MIN: ${{ inputs.budget || '335' }}
-          MAXACC: '0'
+          DIRECT: ${{ inputs.direct || '0' }}
+          MAXACC: ${{ inputs.maxacc || '0' }}
           GAP_MS: '260'
         run: node runner.mjs
