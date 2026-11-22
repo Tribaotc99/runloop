@@ -1,5 +1,5 @@
 // runloop — Bullshot farm runner chay tren GitHub Actions (host free, public repo = unlimited minutes).
-// env: WALLETS = JSON [{id,address,privateKey}] · TP_KEYS = "key1,key2" (topproxy xoay) · BUDGET_MIN · MAXACC · GAP_MS
+// env: WALLETS = JSON [{id,address,privateKey}] · TP_KEYS = "key1,key2" (topproxy xoay) · BUDGET_MIN · MAXACC · GAP_MS · TG_TOKEN/TG_CHAT
 import { Wallet } from 'ethers';
 import { ProxyAgent, fetch as uf } from 'undici';
 
@@ -15,7 +15,19 @@ const BUDGET = Number(process.env.BUDGET_MIN || 330) * 60000;
 const MAXACC = Number(process.env.MAXACC || 0) || W.length;
 const GAP = Number(process.env.GAP_MS || 260);
 const ACCS = W.slice(0, MAXACC);
-log(`accs=${ACCS.length} keys=${KEYS.length} budget=${BUDGET / 60000}min`);
+
+const TGT = process.env.TG_TOKEN, TGC = process.env.TG_CHAT;
+async function tg(msg) {
+  if (!TGT || !TGC) return;
+  try {
+    await fetch('https://api.telegram.org/bot' + TGT + '/sendMessage', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: TGC, text: msg, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch { }
+}
+log('accs=' + ACCS.length + ' keys=' + KEYS.length + ' budget=' + BUDGET / 60000 + 'min');
 
 const TIER = [
   { minLv: 28, id: 'molten-core', E: 100, mp: 400 },
@@ -27,7 +39,7 @@ const TIER = [
 ];
 const XPE = { 'void-rift': 13.3, cave: 10, 'molten-core': 11.5, 'frozen-depths': 8, 'ember-mine': 4.3, 'crystal-cavern': 3, 'greenstone-quarry': 2.5 };
 
-let CAVE = null;
+let CAVE = undefined;
 async function ensureCave(tok, ag) {
   if (CAVE !== undefined) return;
   try {
@@ -43,32 +55,32 @@ async function ensureCave(tok, ag) {
 function bestOpen(lv, mp) {
   if (lv >= 28) return TIER[0];
   if (lv >= 20) return TIER[1];
-  const cand = CAVE ? [...TIER.filter((t) => t.minLv <= 13), CAVE] : TIER.filter((t) => t.minLv <= 13);
+  const base = TIER.filter((t) => t.minLv <= 13);
+  const cand = CAVE ? [...base, CAVE] : base;
   const open = cand.filter((t) => lv >= t.minLv && mp >= t.mp);
   if (!open.length) return TIER[TIER.length - 1];
   return open.sort((a, b) => (XPE[b.id] || 0) - (XPE[a.id] || 0) || b.E - a.E)[0];
 }
 
-// ---- proxy lanes (topproxy xoay): 1 key -> 1 gateway + egress IP xoay, verify bang get.php ----
 const lanes = [];
 async function refreshLanes() {
   for (const k of KEYS) {
-    if (lanes.find((l) => l.key === k && Date.now() - l.at < 15 * 60000)) continue;
+    const have = lanes.find((l) => l.key === k.slice(-6));
+    if (have && Date.now() - have.at < 15 * 60000) continue;
     try {
-      const r = await fetch(`https://proxyxoay.shop/api/get.php?key=${encodeURIComponent(k)}&nhamang=Random`, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(25000) });
+      const r = await fetch('https://proxyxoay.shop/api/get.php?key=' + encodeURIComponent(k) + '&nhamang=Random', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(25000) });
       const js = await r.json();
       if (js.status === 100 && js.proxyhttp) {
         const gw = String(js.proxyhttp).replace(/::$/, '');
-        const old = lanes.find((l) => l.key === k);
-        if (old) { try { old.ag.close(); } catch { } Object.assign(old, { gw, ag: new ProxyAgent('http://' + gw), ip: js.ip, at: Date.now() }); }
+        if (have) { try { have.ag.close(); } catch { } Object.assign(have, { gw, ag: new ProxyAgent('http://' + gw), ip: js.ip, at: Date.now() }); }
         else lanes.push({ key: k.slice(-6), gw, ag: new ProxyAgent('http://' + gw), ip: js.ip, at: Date.now() });
         log('lane ' + k.slice(-6) + ' -> ' + gw + ' egress=' + js.ip);
-      } else log('lane ' + k.slice(-6) + ' get.php status=' + js.status + ' ' + (js.message || ''));
+      } else log('lane ' + k.slice(-6) + ' status=' + js.status + ' ' + (js.message || ''));
     } catch (e) { log('lane ' + k.slice(-6) + ' ERR ' + e.message.slice(0, 60)); }
   }
   return lanes.length;
 }
-if (!KEYS.length) { log('KHONG CO TP_KEYS -> thoat (cam dung IP runner truc tiep)'); process.exit(3); }
+if (!KEYS.length) { log('KHONG CO TP_KEYS -> thoat'); process.exit(3); }
 if (!(await refreshLanes())) { log('KHONG LANE NAO SONG -> thoat'); process.exit(3); }
 
 let eNet = 0, eReq = 0;
@@ -84,7 +96,7 @@ async function api(ag, path, { method = 'GET', body, token } = {}) {
   } catch (e) { eNet++; return { status: 0, js: null, t: e.message.slice(0, 80) }; }
 }
 
-const T = { rounds: 0, accs: 0, ok: 0, claims: 0, starts: 0, stale: 0, net: 0, bad: 0, gems: 0, xp: 0 };
+const T = { rounds: 0, accs: 0, ok: 0, claims: 0, starts: 0, stale: 0, bad: 0, gems: 0, xp: 0 };
 async function login(acc, ag) {
   const n = await api(ag, '/auth/nonce', { method: 'POST', body: { walletAddress: acc.address } });
   if (n.status !== 200 || !n.js?.message) return null;
@@ -93,11 +105,11 @@ async function login(acc, ag) {
   return l.status === 200 ? l.js?.token || null : null;
 }
 async function work(acc, i) {
-  const lane = lanes[i % lanes.length], ag = lane.ag;
+  const ag = lanes[i % lanes.length].ag;
   try {
     if (!acc.token) {
       acc.token = await login(acc, ag);
-      if (!acc.token) { acc.fail = (acc.fail || 0) + 1; T.stale++; return; }
+      if (!acc.token) { T.stale++; return; }
     }
     let pr = await api(ag, '/mining/positions', { token: acc.token });
     if (pr.status === 401 || pr.status === 403) {
@@ -111,7 +123,7 @@ async function work(acc, i) {
     for (const p of plist) {
       const ready = p.status === 'completed' || p.status === 'ready' || p.claimable === true || (p.endsAt && new Date(p.endsAt).getTime() <= now);
       if (!ready) continue;
-      const c = await api(ag, `/mining/positions/${p.id}/claim`, { method: 'POST', body: {}, token: acc.token });
+      const c = await api(ag, '/mining/positions/' + p.id + '/claim', { method: 'POST', body: {}, token: acc.token });
       if (c.status === 200) T.claims++;
       await sleep(GAP);
     }
@@ -122,20 +134,21 @@ async function work(acc, i) {
     if (Number.isFinite(Number(me.js.xp))) T.xp += Number(me.js.xp);
     await ensureCave(acc.token, ag);
     const t = bestOpen(lv, mp);
-    if (mp < t.mp) return;                       // thieu MP -> doi (khong xuong mo bac thap hon)
+    if (mp < t.mp) return;
     const active = plist.filter((p) => p.status === 'active').length;
     const slotMax = Math.floor(cap / t.E);
-    let want = Math.min(Math.max(0, slotMax - active), Math.floor(en / t.E));
+    const want = Math.min(Math.max(0, slotMax - active), Math.floor(en / t.E));
     for (let s = 0; s < want; s++) {
       const p2 = await api(ag, '/mining/positions', { method: 'POST', body: { locationId: t.id }, token: acc.token });
       if (p2.status === 200) { T.starts++; await sleep(GAP); } else break;
     }
     T.ok++;
-    if (T.ok % 25 === 0) log(`  ... ok=${T.ok} claims=${T.claims} starts=${T.starts} accs=${T.accs}`);
-  } catch (e) { T.net++; }
+    if (T.ok % 25 === 0) log('  ... ok=' + T.ok + ' claims=' + T.claims + ' starts=' + T.starts + ' accs=' + T.accs);
+  } catch (e) { eNet++; }
 }
 
 const DEADLINE = Date.now() + BUDGET;
+await tg('RUNLOOP bat dau: ' + ACCS.length + ' acc, ' + lanes.length + ' lane proxy, budget ' + BUDGET / 60000 + ' phut');
 while (Date.now() < DEADLINE) {
   T.rounds++;
   for (let i = 0; i < ACCS.length; i++) {
@@ -144,9 +157,10 @@ while (Date.now() < DEADLINE) {
     await work(ACCS[i], i);
     await sleep(GAP);
   }
-  log(`ROUND ${T.rounds}: ok=${T.ok} claims=${T.claims} starts=${T.starts} stale=${T.stale} bad=${T.bad} net=${eNet}/${eReq} gems=${T.gems} xp=${T.xp}`);
-  // revive lane neu egress chet hang loat (0dn)
+  log('ROUND ' + T.rounds + ': ok=' + T.ok + ' claims=' + T.claims + ' starts=' + T.starts + ' stale=' + T.stale + ' bad=' + T.bad + ' net=' + eNet + '/' + eReq + ' gems=' + T.gems + ' xp=' + T.xp);
+  if (T.rounds % 2 === 1) await tg('ROUND ' + T.rounds + ': ok=' + T.ok + ' claim=' + T.claims + ' start=' + T.starts + ' stale=' + T.stale + ' net=' + eNet + '/' + eReq);
   if (eNet > Math.max(20, eReq * 0.25)) { log('net fail cao -> xoay lai lane'); lanes.length = 0; await refreshLanes(); eNet = 0; eReq = 0; }
   await sleep(30000);
 }
 log('DONE ' + JSON.stringify(T));
+await tg('RUNLOOP xong: ' + JSON.stringify(T));
