@@ -92,6 +92,26 @@ if (process.env.PROBE === '1') {
 }
 
 const lanes = [];
+const laneFail = new Map();
+async function healLane(ln) {
+  if (!ln || ln.gw === 'direct') return false;
+  const full = KEYS.find((k) => k.slice(-6) === ln.key);
+  if (!full) return false;
+  try {
+    const r = await fetch('https://proxyxoay.shop/api/get.php?key=' + encodeURIComponent(full) + '&nhamang=Random', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(25000) });
+    const js = await r.json();
+    if (js.status === 100 && js.proxyhttp) {
+      const gw = String(js.proxyhttp).replace(/::$/, '');
+      try { ln.ag.close(); } catch { }
+      ln.gw = gw; ln.ag = new ProxyAgent('http://' + gw); ln.ip = js.ip; ln.at = Date.now();
+      laneFail.set(ln.key, 0);
+      log('HEAL lane ' + ln.key + ' -> ' + gw + ' egress=' + js.ip);
+      return true;
+    }
+    log('HEAL lane ' + ln.key + ' status=' + js.status + ' ' + (js.message || ''));
+  } catch (e) { log('HEAL lane ' + ln.key + ' ERR ' + e.message.slice(0, 60)); }
+  return false;
+}
 async function refreshLanes() {
   for (const k of KEYS) {
     const have = lanes.find((l) => l.key === k.slice(-6));
@@ -133,6 +153,7 @@ async function api(ag, path, { method = 'GET', body, token } = {}) {
   } catch (e) { eNet++; return { status: 0, js: null, t: e.message.slice(0, 80) }; }
 }
 
+let lastTg = Date.now();
 const T = { rounds: 0, accs: 0, ok: 0, claims: 0, starts: 0, stale: 0, bad: 0, gems: 0, xp: 0 };
 let lgFail = 0;
 async function login(acc, ag) {
@@ -147,7 +168,8 @@ async function login(acc, ag) {
   return null;
 }
 async function work(acc, i) {
-  const ag = lanes[i % lanes.length].ag;
+  const ln = lanes[i % lanes.length];
+  const ag = ln.ag;
   try {
     if (!acc.token) {
       acc.token = await login(acc, ag);
@@ -159,7 +181,14 @@ async function work(acc, i) {
       if (!acc.token) { T.stale++; return; }
       pr = await api(ag, '/mining/positions', { token: acc.token });
     }
-    if (pr.status !== 200) { if (pr.status !== 429) T.bad++; return; }
+    if (pr.status !== 200) {
+      if (pr.status !== 429) T.bad++;
+      const f = (laneFail.get(ln.key) || 0) + (pr.status === 0 || pr.status === 403 || pr.status === 429 ? 1 : 0);
+      laneFail.set(ln.key, f);
+      if (f >= 5) { laneFail.set(ln.key, 0); await healLane(ln); }
+      return;
+    }
+    laneFail.set(ln.key, 0);
     const plist = Array.isArray(pr.js) ? pr.js : pr.js?.positions || [];
     const now = Date.now();
     for (const p of plist) {
@@ -200,7 +229,8 @@ while (Date.now() < DEADLINE) {
     await sleep(GAP);
   }
   log('ROUND ' + T.rounds + ': ok=' + T.ok + ' claims=' + T.claims + ' starts=' + T.starts + ' stale=' + T.stale + ' bad=' + T.bad + ' net=' + eNet + '/' + eReq + ' gems=' + T.gems + ' xp=' + T.xp);
-  if (T.rounds % 2 === 1) await tg('ROUND ' + T.rounds + ': ok=' + T.ok + ' claim=' + T.claims + ' start=' + T.starts + ' stale=' + T.stale + ' net=' + eNet + '/' + eReq);
+  if (Date.now() - lastTg > 30 * 60000) { lastTg = Date.now(); await tg('ROUND ' + T.rounds + ': ok=' + T.ok + ' claim=' + T.claims + ' start=' + T.starts + ' stale=' + T.stale + ' net=' + eNet + '/' + eReq); }
+  if (T.rounds % 8 === 0 && !DIRECT) { for (const ln of lanes) await healLane(ln); }
   if (eNet > Math.max(20, eReq * 0.25)) { log('net fail cao -> xoay lai lane'); if (!DIRECT) { lanes.length = 0; await refreshLanes(); } eNet = 0; eReq = 0; }
   if (Date.now() < DEADLINE) await sleep(15000);
 }
