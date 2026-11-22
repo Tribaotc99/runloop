@@ -1,0 +1,27 @@
+name: runloop
+on:
+  schedule:
+    - cron: '5 */6 * * *'
+  workflow_dispatch:
+concurrency:
+  group: runloop
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: deps
+        run: npm install --omit=dev --no-audit --no-fund
+      - name: run
+        env:
+          WALLETS: ${{ secrets.WALLETS }}
+          TP_KEYS: ${{ secrets.TP_KEYS }}
+          BUDGET_MIN: '335'
+          MAXACC: '0'
+          GAP_MS: '260'
+        run: node runner.mjs
