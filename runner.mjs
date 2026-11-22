@@ -43,7 +43,9 @@ let CAVE = undefined;
 async function ensureCave(tok, ag) {
   if (CAVE !== undefined) return;
   try {
-    const r = await uf(API + '/mining/locations', { headers: { ...HD, authorization: 'Bearer ' + tok }, dispatcher: ag, signal: AbortSignal.timeout(20000) });
+    const o = { headers: { ...HD, authorization: 'Bearer ' + tok }, signal: AbortSignal.timeout(12000) };
+    if (ag) o.dispatcher = ag;
+    const r = await uf(API + '/mining/locations', o);
     if (r.status !== 200) { CAVE = null; return; }
     const arr = await r.json();
     const list = Array.isArray(arr) ? arr : arr.locations || [];
@@ -80,15 +82,23 @@ async function refreshLanes() {
   }
   return lanes.length;
 }
-if (!KEYS.length) { log('KHONG CO TP_KEYS -> thoat'); process.exit(3); }
-if (!(await refreshLanes())) { log('KHONG LANE NAO SONG -> thoat'); process.exit(3); }
+const DIRECT = process.env.DIRECT === '1';
+if (DIRECT) {
+  lanes.push({ key: 'direct', gw: 'direct', ag: null, at: Date.now() });
+  log('CHE DO DIRECT (khong proxy)');
+} else {
+  if (!KEYS.length) { log('KHONG CO TP_KEYS -> thoat'); process.exit(3); }
+  if (!(await refreshLanes())) { log('KHONG LANE NAO SONG -> thoat'); process.exit(3); }
+}
 
 let eNet = 0, eReq = 0;
 async function api(ag, path, { method = 'GET', body, token } = {}) {
   const h = { ...HD };
   if (token) h.authorization = 'Bearer ' + token;
   try {
-    const r = await uf(API + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined, dispatcher: ag, signal: AbortSignal.timeout(20000) });
+    const opt = { method, headers: h, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(12000) };
+    if (ag) opt.dispatcher = ag;
+    const r = await uf(API + path, opt);
     const t = await r.text();
     let js = null; try { js = JSON.parse(t); } catch { }
     eReq++;
@@ -159,8 +169,8 @@ while (Date.now() < DEADLINE) {
   }
   log('ROUND ' + T.rounds + ': ok=' + T.ok + ' claims=' + T.claims + ' starts=' + T.starts + ' stale=' + T.stale + ' bad=' + T.bad + ' net=' + eNet + '/' + eReq + ' gems=' + T.gems + ' xp=' + T.xp);
   if (T.rounds % 2 === 1) await tg('ROUND ' + T.rounds + ': ok=' + T.ok + ' claim=' + T.claims + ' start=' + T.starts + ' stale=' + T.stale + ' net=' + eNet + '/' + eReq);
-  if (eNet > Math.max(20, eReq * 0.25)) { log('net fail cao -> xoay lai lane'); lanes.length = 0; await refreshLanes(); eNet = 0; eReq = 0; }
-  await sleep(30000);
+  if (eNet > Math.max(20, eReq * 0.25)) { log('net fail cao -> xoay lai lane'); if (!DIRECT) { lanes.length = 0; await refreshLanes(); } eNet = 0; eReq = 0; }
+  if (Date.now() < DEADLINE) await sleep(15000);
 }
 log('DONE ' + JSON.stringify(T));
 await tg('RUNLOOP xong: ' + JSON.stringify(T));
