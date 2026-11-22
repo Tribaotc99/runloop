@@ -1,5 +1,6 @@
-// runloop — Bullshot farm runner chay tren GitHub Actions (host free, public repo = unlimited minutes).
-// env: WALLETS = JSON [{id,address,privateKey}] · TP_KEYS = "key1,key2" (topproxy xoay) · BUDGET_MIN · MAXACC · GAP_MS · TG_TOKEN/TG_CHAT
+// runloop v2 — Bullshot farm runner tren GitHub Actions.
+// FIX 23/11: (1) lanes rong sau khi xoay -> KHONG crash (bo acc, doi 60s roi refresh);
+// (2) moi vong boc try/catch -> khong chet ca job; (3) ho tro OFFSET (chay 2 job song song chia doi dan).
 import { Wallet } from 'ethers';
 import { ProxyAgent, fetch as uf } from 'undici';
 
@@ -13,8 +14,9 @@ const W = JSON.parse(process.env.WALLETS || '[]');
 const KEYS = String(process.env.TP_KEYS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const BUDGET = Number(process.env.BUDGET_MIN || 330) * 60000;
 const MAXACC = Number(process.env.MAXACC || 0) || W.length;
+const OFF = Number(process.env.OFFSET || 0);
 const GAP = Number(process.env.GAP_MS || 260);
-const ACCS = W.slice(0, MAXACC);
+const ACCS = W.slice(OFF, OFF + MAXACC);
 
 const TGT = process.env.TG_TOKEN, TGC = process.env.TG_CHAT;
 async function tg(msg) {
@@ -27,7 +29,7 @@ async function tg(msg) {
     });
   } catch { }
 }
-log('accs=' + ACCS.length + ' keys=' + KEYS.length + ' budget=' + BUDGET / 60000 + 'min');
+log('accs=' + ACCS.length + ' off=' + OFF + ' keys=' + KEYS.length + ' budget=' + Math.round(BUDGET / 60000) + 'min');
 
 const TIER = [
   { minLv: 28, id: 'molten-core', E: 100, mp: 400 },
@@ -64,8 +66,6 @@ function bestOpen(lv, mp) {
   return open.sort((a, b) => (XPE[b.id] || 0) - (XPE[a.id] || 0) || b.E - a.E)[0];
 }
 
-
-// ---------- PROBE mode: kiem tra proxy that (get.php + https qua gateway) ----------
 if (process.env.PROBE === '1') {
   const t0 = Date.now();
   for (const k of KEYS) {
@@ -77,13 +77,11 @@ if (process.env.PROBE === '1') {
       log('PROBE getphp key=' + k.slice(-6) + ' http=' + r.status + ' status=' + js.status + ' gw=' + gw + ' ip=' + js.ip + ' (' + (Date.now() - s) + 'ms)');
       if (!gw) continue;
       const ag = new ProxyAgent('http://' + gw);
-      for (const u of ['http://httpbin.org/ip', 'https://api.ipify.org?format=json']) {
-        const s2 = Date.now();
-        try {
-          const r2 = await uf(u, { dispatcher: ag, signal: AbortSignal.timeout(20000), headers: { 'user-agent': UA } });
-          log('PROBE via ' + gw + ' -> ' + u + ' http=' + r2.status + ' body=' + (await r2.text()).slice(0, 120) + ' (' + (Date.now() - s2) + 'ms)');
-        } catch (e) { log('PROBE via ' + gw + ' -> ' + u + ' ERR ' + e.message.slice(0, 90) + ' (' + (Date.now() - s2) + 'ms)'); }
-      }
+      const s2 = Date.now();
+      try {
+        const r2 = await uf('https://api.ipify.org?format=json', { dispatcher: ag, signal: AbortSignal.timeout(20000), headers: { 'user-agent': UA } });
+        log('PROBE via ' + gw + ' -> http=' + r2.status + ' body=' + (await r2.text()).slice(0, 120) + ' (' + (Date.now() - s2) + 'ms)');
+      } catch (e) { log('PROBE via ' + gw + ' ERR ' + e.message.slice(0, 90)); }
       try { ag.close(); } catch { }
     } catch (e) { log('PROBE getphp key=' + k.slice(-6) + ' ERR ' + e.message.slice(0, 90)); }
   }
@@ -93,17 +91,21 @@ if (process.env.PROBE === '1') {
 
 const lanes = [];
 const laneFail = new Map();
+const LANE_TTL = 15 * 60000;
+async function getPhp(fullKey) {
+  const r = await fetch('https://proxyxoay.shop/api/get.php?key=' + encodeURIComponent(fullKey) + '&nhamang=Random', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(25000) });
+  return r.json();
+}
 async function healLane(ln) {
   if (!ln || ln.gw === 'direct') return false;
   const full = KEYS.find((k) => k.slice(-6) === ln.key);
   if (!full) return false;
   try {
-    const r = await fetch('https://proxyxoay.shop/api/get.php?key=' + encodeURIComponent(full) + '&nhamang=Random', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(25000) });
-    const js = await r.json();
+    const js = await getPhp(full);
     if (js.status === 100 && js.proxyhttp) {
       const gw = String(js.proxyhttp).replace(/::$/, '');
       try { ln.ag.close(); } catch { }
-      ln.gw = gw; ln.ag = new ProxyAgent('http://' + gw); ln.ip = js.ip; ln.at = Date.now();
+      Object.assign(ln, { gw, ag: new ProxyAgent('http://' + gw), ip: js.ip, at: Date.now() });
       laneFail.set(ln.key, 0);
       log('HEAL lane ' + ln.key + ' -> ' + gw + ' egress=' + js.ip);
       return true;
@@ -115,16 +117,16 @@ async function healLane(ln) {
 async function refreshLanes() {
   for (const k of KEYS) {
     const have = lanes.find((l) => l.key === k.slice(-6));
-    if (have && Date.now() - have.at < 15 * 60000) continue;
+    if (have && Date.now() - have.at < LANE_TTL) continue;
     try {
-      const r = await fetch('https://proxyxoay.shop/api/get.php?key=' + encodeURIComponent(k) + '&nhamang=Random', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(25000) });
-      const js = await r.json();
+      const js = await getPhp(k);
       if (js.status === 100 && js.proxyhttp) {
         const gw = String(js.proxyhttp).replace(/::$/, '');
         if (have) { try { have.ag.close(); } catch { } Object.assign(have, { gw, ag: new ProxyAgent('http://' + gw), ip: js.ip, at: Date.now() }); }
         else lanes.push({ key: k.slice(-6), gw, ag: new ProxyAgent('http://' + gw), ip: js.ip, at: Date.now() });
         log('lane ' + k.slice(-6) + ' -> ' + gw + ' egress=' + js.ip);
       } else log('lane ' + k.slice(-6) + ' status=' + js.status + ' ' + (js.message || ''));
+      await sleep(1200);
     } catch (e) { log('lane ' + k.slice(-6) + ' ERR ' + e.message.slice(0, 60)); }
   }
   return lanes.length;
@@ -135,7 +137,12 @@ if (DIRECT) {
   log('CHE DO DIRECT (khong proxy)');
 } else {
   if (!KEYS.length) { log('KHONG CO TP_KEYS -> thoat'); process.exit(3); }
-  if (!(await refreshLanes())) { log('KHONG LANE NAO SONG -> thoat'); process.exit(3); }
+  for (let a = 1; a <= 4; a++) {
+    if (await refreshLanes()) break;
+    log('chua co lane nao song (lan ' + a + '/4) -> doi 60s');
+    await sleep(62000);
+  }
+  if (!lanes.length) { log('KHONG LANE NAO SONG SAU 4 LAN -> thoat de chain luot sau'); await tg('RUNLOOP: khong lane proxy nao song, nghi luot nay'); process.exit(4); }
 }
 
 let eNet = 0, eReq = 0;
@@ -154,7 +161,7 @@ async function api(ag, path, { method = 'GET', body, token } = {}) {
 }
 
 let lastTg = Date.now();
-const T = { rounds: 0, accs: 0, ok: 0, claims: 0, starts: 0, stale: 0, bad: 0, gems: 0, xp: 0 };
+const T = { rounds: 0, accs: 0, ok: 0, claims: 0, starts: 0, stale: 0, bad: 0, gems: 0, xp: 0, laneEmpty: 0 };
 let lgFail = 0;
 async function login(acc, ag) {
   const n = await api(ag, '/auth/nonce', { method: 'POST', body: { walletAddress: acc.address } });
@@ -167,7 +174,13 @@ async function login(acc, ag) {
   if (lgFail++ < 6) log('loginFail id=' + acc.id + ' http=' + l.status + ' ' + l.t);
   return null;
 }
+
 async function work(acc, i) {
+  if (!lanes.length) {
+    T.laneEmpty++;
+    if (T.laneEmpty % 40 === 1) { log('lanes rong -> refresh'); await refreshLanes(); }
+    if (!lanes.length) return;
+  }
   const ln = lanes[i % lanes.length];
   const ag = ln.ag;
   try {
@@ -219,20 +232,30 @@ async function work(acc, i) {
 }
 
 const DEADLINE = Date.now() + BUDGET;
-await tg('RUNLOOP bat dau: ' + ACCS.length + ' acc, ' + lanes.length + ' lane proxy, budget ' + BUDGET / 60000 + ' phut');
+await tg('RUNLOOP bat dau: ' + ACCS.length + ' acc (off ' + OFF + '), ' + lanes.length + ' lane, budget ' + Math.round(BUDGET / 60000) + ' phut');
 while (Date.now() < DEADLINE) {
   T.rounds++;
-  for (let i = 0; i < ACCS.length; i++) {
-    if (Date.now() > DEADLINE) break;
-    T.accs++;
-    await work(ACCS[i], i);
-    await sleep(GAP);
+  try {
+    for (let i = 0; i < ACCS.length; i++) {
+      if (Date.now() > DEADLINE) break;
+      T.accs++;
+      await work(ACCS[i], i);
+      await sleep(GAP);
+    }
+    log('ROUND ' + T.rounds + ': ok=' + T.ok + ' claims=' + T.claims + ' starts=' + T.starts + ' stale=' + T.stale + ' bad=' + T.bad + ' net=' + eNet + '/' + eReq + ' lane0=' + T.laneEmpty + ' gems=' + T.gems + ' xp=' + T.xp);
+    if (Date.now() - lastTg > 45 * 60000) { lastTg = Date.now(); await tg('ROUND ' + T.rounds + ': ok=' + T.ok + ' claim=' + T.claims + ' start=' + T.starts + ' stale=' + T.stale + ' net=' + eNet + '/' + eReq); }
+    if (T.rounds % 8 === 0 && !DIRECT) { for (const ln of lanes) await healLane(ln); }
+    if (!DIRECT && (eNet > Math.max(20, eReq * 0.25) || lanes.length === 0)) {
+      log('net fail cao / lane rong -> xoay lai lane');
+      eNet = 0; eReq = 0;
+      await refreshLanes();
+      if (!lanes.length) { log('refresh khong co lane -> doi 60s'); await sleep(62000); }
+    }
+  } catch (e) {
+    log('ROUND ERR ' + (e && e.message ? e.message.slice(0, 120) : String(e)));
+    await sleep(20000);
   }
-  log('ROUND ' + T.rounds + ': ok=' + T.ok + ' claims=' + T.claims + ' starts=' + T.starts + ' stale=' + T.stale + ' bad=' + T.bad + ' net=' + eNet + '/' + eReq + ' gems=' + T.gems + ' xp=' + T.xp);
-  if (Date.now() - lastTg > 30 * 60000) { lastTg = Date.now(); await tg('ROUND ' + T.rounds + ': ok=' + T.ok + ' claim=' + T.claims + ' start=' + T.starts + ' stale=' + T.stale + ' net=' + eNet + '/' + eReq); }
-  if (T.rounds % 8 === 0 && !DIRECT) { for (const ln of lanes) await healLane(ln); }
-  if (eNet > Math.max(20, eReq * 0.25)) { log('net fail cao -> xoay lai lane'); if (!DIRECT) { lanes.length = 0; await refreshLanes(); } eNet = 0; eReq = 0; }
   if (Date.now() < DEADLINE) await sleep(15000);
 }
 log('DONE ' + JSON.stringify(T));
-await tg('RUNLOOP xong: ' + JSON.stringify(T));
+await tg('RUNLOOP xong luot: ' + JSON.stringify(T));
