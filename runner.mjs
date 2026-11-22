@@ -64,6 +64,33 @@ function bestOpen(lv, mp) {
   return open.sort((a, b) => (XPE[b.id] || 0) - (XPE[a.id] || 0) || b.E - a.E)[0];
 }
 
+
+// ---------- PROBE mode: kiem tra proxy that (get.php + https qua gateway) ----------
+if (process.env.PROBE === '1') {
+  const t0 = Date.now();
+  for (const k of KEYS) {
+    const s = Date.now();
+    try {
+      const r = await fetch('https://proxyxoay.shop/api/get.php?key=' + encodeURIComponent(k) + '&nhamang=Random', { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(20000) });
+      const js = await r.json();
+      const gw = js.proxyhttp ? String(js.proxyhttp).replace(/::$/, '') : null;
+      log('PROBE getphp key=' + k.slice(-6) + ' http=' + r.status + ' status=' + js.status + ' gw=' + gw + ' ip=' + js.ip + ' (' + (Date.now() - s) + 'ms)');
+      if (!gw) continue;
+      const ag = new ProxyAgent('http://' + gw);
+      for (const u of ['http://httpbin.org/ip', 'https://api.ipify.org?format=json']) {
+        const s2 = Date.now();
+        try {
+          const r2 = await uf(u, { dispatcher: ag, signal: AbortSignal.timeout(20000), headers: { 'user-agent': UA } });
+          log('PROBE via ' + gw + ' -> ' + u + ' http=' + r2.status + ' body=' + (await r2.text()).slice(0, 120) + ' (' + (Date.now() - s2) + 'ms)');
+        } catch (e) { log('PROBE via ' + gw + ' -> ' + u + ' ERR ' + e.message.slice(0, 90) + ' (' + (Date.now() - s2) + 'ms)'); }
+      }
+      try { ag.close(); } catch { }
+    } catch (e) { log('PROBE getphp key=' + k.slice(-6) + ' ERR ' + e.message.slice(0, 90)); }
+  }
+  log('PROBE done ' + (Date.now() - t0) + 'ms');
+  process.exit(0);
+}
+
 const lanes = [];
 async function refreshLanes() {
   for (const k of KEYS) {
