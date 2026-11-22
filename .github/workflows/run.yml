@@ -3,9 +3,13 @@ on:
   schedule:
     - cron: '5 */6 * * *'
   workflow_dispatch:
+    inputs:
+      budget:
+        description: 'so phut chay'
+        default: '335'
 concurrency:
   group: runloop
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -21,7 +25,9 @@ jobs:
         env:
           WALLETS: ${{ secrets.WALLETS }}
           TP_KEYS: ${{ secrets.TP_KEYS }}
-          BUDGET_MIN: '335'
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          BUDGET_MIN: ${{ inputs.budget || '335' }}
           MAXACC: '0'
           GAP_MS: '260'
         run: node runner.mjs
