@@ -107,12 +107,17 @@ async function api(ag, path, { method = 'GET', body, token } = {}) {
 }
 
 const T = { rounds: 0, accs: 0, ok: 0, claims: 0, starts: 0, stale: 0, bad: 0, gems: 0, xp: 0 };
+let lgFail = 0;
 async function login(acc, ag) {
   const n = await api(ag, '/auth/nonce', { method: 'POST', body: { walletAddress: acc.address } });
-  if (n.status !== 200 || !n.js?.message) return null;
-  const signature = await new Wallet(acc.privateKey).signMessage(n.js.message);
+  if (n.status !== 200 || !n.js?.message) { if (lgFail++ < 6) log('nonceFail id=' + acc.id + ' http=' + n.status + ' ' + n.t); return null; }
+  let signature;
+  try { signature = await new Wallet(acc.privateKey).signMessage(n.js.message); }
+  catch (e) { if (lgFail++ < 6) log('signErr id=' + acc.id + ' ' + e.message.slice(0, 60)); return null; }
   const l = await api(ag, '/auth/login', { method: 'POST', body: { walletAddress: acc.address, signature, message: n.js.message } });
-  return l.status === 200 ? l.js?.token || null : null;
+  if (l.status === 200 && l.js?.token) return l.js.token;
+  if (lgFail++ < 6) log('loginFail id=' + acc.id + ' http=' + l.status + ' ' + l.t);
+  return null;
 }
 async function work(acc, i) {
   const ag = lanes[i % lanes.length].ag;
